@@ -1,10 +1,4 @@
 <div align="center">
-<h1> WebVoyager 
-<img src="./assets/icon.png" width="45px">
-<br> Building an End-to-End Web Agent with Large Multimodal Models </h1>
-</div>
-
-<div align="center">
 
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10.13-green.svg)
