@@ -1,6 +1,5 @@
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10.13-green.svg)
 ![Selenium](https://img.shields.io/badge/Selenium-4.15.2-red)
 
@@ -40,9 +39,9 @@ We use Selenium to build the online web browsing environment.
 The test data you can found in `data/WebVoyager_datatasks_test.jsonl`.
 
 And now, you can modify to your own.
-"""
+```
 {"web_name": "Genius", "id": "Genius--1", "ques": "Search for the song 'Let It Go'. Identify the result with the highest number of views, open the lyrics page, scroll down if necessary, and extract the complete lyrics.", "web": "https://genius.com/"}
-"""
+```
 
 
 Other detail, please follow the [WebVoyager github](https://github.com/MinorJerry/WebVoyager)
