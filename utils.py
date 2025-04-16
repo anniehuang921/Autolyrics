@@ -210,7 +210,7 @@ def get_web_element_rect(browser, fix_color=True):
     return rects, [web_ele['element'] for web_ele in items_raw], format_ele_text
 
 
-def extract_information(text):
+def extract_information_origin(text):
     patterns = {
         "click": r"Click \[?(\d+)\]?",
         "type": r"Type \[?(\d+)\]?[; ]+\[?(.[^\]]*)\]?",
@@ -223,6 +223,7 @@ def extract_information(text):
     }
 
     for key, pattern in patterns.items():
+        
         match = re.search(pattern, text)
         if match:
             if key in ["click", "wait", "goback", "google"]:
@@ -232,6 +233,85 @@ def extract_information(text):
                 return key, {"number": match.group(1), "content": match.group(2)} if key in ["type", "scroll"] else {"content": match.group(1)}
     return None, None
 
+def extract_information_old(text):
+    patterns = {
+        "click": r"Click \[?(\d+)\]?",
+        "type": r"Type \[?(\d+)\]?[; ]+\[?(.[^\]]*)\]?",
+        "scroll": r"Scroll \[?(\d+|WINDOW)\]?[; ]+\[?(up|down)\]?",
+        "wait": r"^Wait",
+        "goback": r"^GoBack",
+        "google": r"^Google",
+        #"answer_partial": r"ANSWER;\s*PARTIAL_LYRICS:\s*\[\"(.*?)\"\]\s*SCROLL_NEEDED",
+        #"answer_partial": r"ANSWER;\s*PARTIAL_LYRICS:\s*\[\s*\"(.+?)\"\s*\]\s*SCROLL_NEEDED",
+        "answer_partial": r"ANSWER;\s*PARTIAL_LYRICS:\s*\[\s*\"([\s\S]+?)\"\s*\]\s*SCROLL_NEEDED",
+        #"answer_full": r"ANSWER;\s*FULL_LYRICS:\s*\[\"(.*?)\"\]",
+        "answer_full": r"ANSWER;\s*FULL_LYRICS:\s*\[\"(.*?)\"\]"
+        #"answer_generic": r"ANSWER;\s*\[?(.*)\]?"
+    }
+
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            if key in ["click", "wait", "goback", "google"]:
+                # Actions without additional content
+                return key, match.groups()
+            elif key in ["type", "scroll"]:
+                return key, {"number": match.group(1), "content": match.group(2)}
+            elif key == "answer_partial":
+                return "answer", {"type": "partial", "content": match.group(1)}
+            elif key == "answer_full":
+                return "answer", {"type": "full", "content": match.group(1)}
+            elif key == "answer_generic":
+                return "answer", {"type": "generic", "content": match.group(1)}
+
+    return None, None
+
+def extract_information(text):
+    patterns = {
+        "click": r"Click \[?(\d+)\]?",
+        "type": r"Type \[?(\d+)\]?[; ]+\[?(.[^\]]*)\]?",
+        "scroll": r"Scroll \[?(\d+|WINDOW)\]?[; ]+\[?(up|down)\]?",
+        "wait": r"^Wait",
+        "goback": r"^GoBack",
+        "google": r"^Google",
+        "answer_partial": r"ANSWER;\s*PARTIAL_LYRICS:\s*\[\s*\"([\s\S]+?)\"?\s*\]?\s*SCROLL_NEEDED",
+        "answer_full": r"ANSWER;\s*FULL_LYRICS:\s*\[\s*\"([\s\S]+?)\"?\s*\]"
+    }
+
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            logging.info(f"[extract_information] matched pattern: {key}")
+            if key in ["click", "wait", "goback", "google"]:
+                return key, match.groups()
+            elif key in ["type", "scroll"]:
+                return key, {"number": match.group(1), "content": match.group(2)}
+            elif key == "answer_partial":
+                return "answer", {"type": "partial", "content": match.group(1)}
+            elif key == "answer_full":
+                return "answer", {"type": "full", "content": match.group(1)}
+
+    # ⛑️ fallback parser（修補不完整輸出）
+    if "PARTIAL_LYRICS:" in text:
+        try:
+            lyrics_text = text.split("PARTIAL_LYRICS:")[1].split("SCROLL_NEEDED")[0]
+            lyrics_text = lyrics_text.strip().strip('["').strip('"]')
+            logging.warning("⚠️ fallback matched: partial lyrics (incomplete pattern)")
+            return "answer", {"type": "partial", "content": lyrics_text}
+        except Exception as e:
+            logging.warning("⚠️ fallback failed to parse PARTIAL_LYRICS")
+    
+    if "FULL_LYRICS:" in text:
+        try:
+            lyrics_text = text.split("FULL_LYRICS:")[1]
+            lyrics_text = lyrics_text.strip().strip('["').strip('"]')
+            logging.warning("⚠️ fallback matched: full lyrics (incomplete pattern)")
+            return "answer", {"type": "full", "content": lyrics_text}
+        except Exception as e:
+            logging.warning("⚠️ fallback failed to parse FULL_LYRICS")
+
+    logging.warning(f"[extract_information] No pattern matched. Raw input:\n{text}")
+    return None, None
 
 def clip_message(msg, max_img_num):
     clipped_msg = []

@@ -1,4 +1,3 @@
-from PIL import Image
 import platform
 import argparse
 import time
@@ -7,19 +6,17 @@ import re
 import os
 import shutil
 import logging
+import base64
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support import expected_conditions as EC
 
-from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
+from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY, SYSTEM_PREVIOUS_STEP, ERROR_GROUNDING_AGENT_PROMPT, EXTRACT_LYRICS_PROMPT, COMBINE_LYRICS_AGENT_PROMPT
 from openai import OpenAI
 from utils import get_web_element_rect, encode_image, extract_information, print_message,\
     get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, clip_message_and_obs_text_only
-
 
 def setup_logger(folder_path):
     log_file_path = os.path.join(folder_path, 'agent.log')
@@ -38,6 +35,7 @@ def setup_logger(folder_path):
 
 def driver_config(args):
     options = webdriver.ChromeOptions()
+    options.add_argument("disable-blink-features=AutomationControlled")
 
     if args.save_accessibility_tree:
         args.force_device_scale = True
@@ -55,372 +53,30 @@ def driver_config(args):
             "plugins.always_open_pdf_externally": True
         }
     )
+    options.add_argument("disable-blink-features=AutomationControlled") 
     return options
-"""origin1
-def capture_full_page(driver_task, task_dir, it):
-    
-    #先滾動頁面，確保所有內容都載入，並多次截圖拼接完整內容
-    
-    last_height = driver_task.execute_script("return document.body.scrollHeight")
-    full_screenshots = []
-    
-    while True:
-        # 截圖
-        img_path = os.path.join(task_dir, f'screenshot{it}_{len(full_screenshots)}.png')
-        driver_task.save_screenshot(img_path)
-        full_screenshots.append(img_path)
 
-        # 滾動
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(2)  # 等待載入
-        
-        # 檢查是否到底部
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
 
-    # 拼接圖片
-    stitched_img_path = os.path.join(task_dir, f'screenshot_full_{it}.png')
-    stitch_images(full_screenshots, stitched_img_path)
-    
-    return stitched_img_path  # 返回拼接後的完整截圖
-
-def stitch_images(image_paths, output_path):
-    
-    #拼接多張截圖，形成完整的長圖片
-    
-    images = [Image.open(img) for img in image_paths]
-
-    # 計算拼接後的總高度
-    total_height = sum(img.height for img in images)
-    max_width = max(img.width for img in images)
-
-    # 創建一個新圖片，將所有圖片拼接在一起
-    stitched_img = Image.new("RGB", (max_width, total_height))
-
-    y_offset = 0
-    for img in images:
-        stitched_img.paste(img, (0, y_offset))
-        y_offset += img.height
-
-    # 儲存拼接好的圖片
-    stitched_img.save(output_path)
-"""
-"""origin2
-def capture_full_page(driver_task, task_dir, it):
-    
-    #逐步滾動並截圖，確保所有內容都載入，然後拼接成完整圖片。
-    
-    full_screenshots = []
-    scroll_attempts = 0
-    max_scroll_attempts = 20  # 避免無窮滾動
-
-    while scroll_attempts < max_scroll_attempts:
-        # 等待頁面載入
-        WebDriverWait(driver_task, 2).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-
-        # 截圖
-        img_path = os.path.join(task_dir, f'screenshot{it}_{len(full_screenshots)}.png')
-        driver_task.save_screenshot(img_path)
-        full_screenshots.append(img_path)
-
-        # 紀錄當前滾動高度
-        last_height = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        # 滾動一個視窗高度
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(1.5)  # 給網頁時間載入新內容
-
-        # 檢查是否滾動到底部
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        current_y_offset = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        if current_y_offset >= new_height:  # 滾動到底
-            break
-
-        scroll_attempts += 1  # 增加滾動次數計數器
-
-    # 拼接圖片
-    stitched_img_path = os.path.join(task_dir, f'screenshot_full_{it}.png')
-    stitch_images(full_screenshots, stitched_img_path)
-
-    return stitched_img_path  # 返回拼接後的完整截圖
-
-def stitch_images(image_paths, output_path):
-    
-    #拼接多張截圖，形成完整的長圖片。
- 
-    images = [Image.open(img) for img in image_paths]
-
-    # 計算拼接後的總高度
-    total_height = sum(img.height for img in images)
-    max_width = max(img.width for img in images)
-
-    # 創建一個新圖片，將所有圖片拼接在一起
-    stitched_img = Image.new("RGB", (max_width, total_height))
-
-    y_offset = 0
-    for img in images:
-        stitched_img.paste(img, (0, y_offset))
-        y_offset += img.height
-
-    # 儲存拼接好的圖片
-    stitched_img.save(output_path)
-
-def get_full_page_elements(driver_task):
-
-    #先滾動完整頁面，然後獲取所有可選取的元素（rects, elements, texts）
-
-    full_rects = []
-    full_elements = []
-    full_elements_text = []
-
-    # 先滾動回頁面頂部，確保從頭開始標記元素
-    driver_task.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
-
-    last_height = driver_task.execute_script("return document.body.scrollHeight")
-    scroll_attempts = 0
-    max_scroll_attempts = 20
-
-    while scroll_attempts < max_scroll_attempts:
-        # 獲取當前可見的元素
-        rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=True)
-        
-        # **累積所有標註的元素資訊**
-        full_rects.extend(rects)
-        full_elements.extend(web_eles)
-        full_elements_text.extend(web_eles_text)
-
-        # **滾動一個視窗高度**
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(1.5)  # 等待內容載入
-
-        # **檢查是否滾動到底部**
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        current_y_offset = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        if current_y_offset >= new_height:
-            break  # **滾動到底部時停止**
-
-        scroll_attempts += 1
-
-    return full_rects, full_elements, full_elements_text  # **確保返回 rects**
-"""
-
-"""origin3
-def capture_full_page(driver_task, task_dir, it):
-    
-    #逐步滾動，確保獲取完整的頁面，並在滾動過程中逐步截圖。
-    
-    full_screenshots = []
-    scroll_attempts = 0
-    max_scroll_attempts = 30  # 防止無窮滾動
-
-    # **先滾動回頁面頂部，確保從頭開始**
-    driver_task.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)  # 等待頁面回到頂部
-
-    while scroll_attempts < max_scroll_attempts:
-        # **等待頁面元素加載**
-        WebDriverWait(driver_task, 3).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-
-        # **截圖當前視窗**
-        img_path = os.path.join(task_dir, f'screenshot{it}_{len(full_screenshots)}.png')
-        driver_task.save_screenshot(img_path)
-        full_screenshots.append(img_path)
-
-        # **記錄當前滾動高度**
-        last_height = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        # **滾動一個視窗高度**
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(1.5)  # 給網頁時間載入新內容
-
-        # **檢查是否滾動到底部**
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        current_y_offset = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        if current_y_offset >= new_height:  # **確認滾動到底部**
-            break
-
-        scroll_attempts += 1  # **增加滾動計數器，防止無窮滾動**
-
-    # **滾動到底後，再標記網頁元素**
-    print("已獲取完整頁面，開始標記可交互元素...")
-    rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=True)
-    print("標記完成")
-
-    # **拼接圖片**
-    stitched_img_path = os.path.join(task_dir, f'screenshot_full_{it}.png')
-    stitch_images(full_screenshots, stitched_img_path)
-
-    return stitched_img_path, rects, web_eles, web_eles_text  # 返回拼接後的完整截圖和標記的元素
-"""
-
-def stitch_images(image_paths, output_path):
-    
-    #拼接多張截圖，形成完整的長圖片。
- 
-    images = [Image.open(img) for img in image_paths]
-
-    # 計算拼接後的總高度
-    total_height = sum(img.height for img in images)
-    max_width = max(img.width for img in images)
-
-    # 創建一個新圖片，將所有圖片拼接在一起
-    stitched_img = Image.new("RGB", (max_width, total_height))
-
-    y_offset = 0
-    for img in images:
-        stitched_img.paste(img, (0, y_offset))
-        y_offset += img.height
-
-    # 儲存拼接好的圖片
-    stitched_img.save(output_path)
-
-def capture_and_mark_full_page(driver_task, task_dir, it):
-    """
-    逐步滾動、清除舊標記、重新標記當前視窗並截圖，確保所有內容都載入，最後拼接成完整圖片。
-    """
-    full_screenshots = []
-    scroll_attempts = 0
-    max_scroll_attempts = 20  # 避免無窮滾動
-    stitched_img_path = os.path.join(task_dir, f'screenshot_full_{it}.png')
-
-    # **先滾動回頁面頂部**
-    driver_task.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
-
-    while scroll_attempts < max_scroll_attempts:
-        # **等待頁面載入**
-        WebDriverWait(driver_task, 2).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-
-        # **清除先前的標記**
-        driver_task.execute_script("var elements = document.querySelectorAll('.highlighted');elements.forEach(el => el.remove());")
-
-        # **獲取當前可見的元素**
-        rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=True)
-
-        # **截圖**
-        img_path = os.path.join(task_dir, f'screenshot{it}_{len(full_screenshots)}.png')
-        driver_task.save_screenshot(img_path)
-        full_screenshots.append(img_path)
-
-        # **滾動一個視窗高度**
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(1.5)  # 等待內容載入
-
-        # **檢查是否滾動到底部**
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        current_y_offset = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        if current_y_offset >= new_height:
-            break  # **滾動到底部時停止**
-
-        scroll_attempts += 1  # **增加滾動次數計數器**
-
-    # **拼接圖片**
-    stitch_images(full_screenshots, stitched_img_path)
-
-    # **最後再滾動回頁面頂部**
-    driver_task.execute_script("window.scrollTo(0, 0);")
-    
-    return stitched_img_path, rects, web_eles, web_eles_text  # **返回完整截圖和當前標記資訊**
-"""origin4"
-def capture_and_mark_full_page(driver_task, task_dir, it):
-    
-    #逐步滾動、標記並截圖，確保所有內容都載入，最後拼接成完整圖片。
-    
-    full_screenshots = []
-    full_rects = []
-    full_elements = []
-    full_elements_text = []
-
-    scroll_attempts = 0
-    max_scroll_attempts = 20  # 避免無窮滾動
-
-    # **先滾動回頁面頂部**
-    driver_task.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
-
-    while scroll_attempts < max_scroll_attempts:
-        # **等待頁面載入**
-        WebDriverWait(driver_task, 2).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-
-        # **獲取當前可見的元素**
-        rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=True)
-
-        # **累積所有標註的元素資訊**
-        if rects:
-            full_rects.extend(rects)
-            full_elements.extend(web_eles)
-            full_elements_text.extend(web_eles_text)
-
-        # **截圖**
-        img_path = os.path.join(task_dir, f'screenshot{it}_{len(full_screenshots)}.png')
-        driver_task.save_screenshot(img_path)
-        full_screenshots.append(img_path)
-
-        # **滾動一個視窗高度**
-        driver_task.execute_script("window.scrollBy(0, window.innerHeight);")
-        time.sleep(1.5)  # 等待內容載入
-
-        # **檢查是否滾動到底部**
-        new_height = driver_task.execute_script("return document.body.scrollHeight")
-        current_y_offset = driver_task.execute_script("return window.pageYOffset + window.innerHeight")
-
-        if current_y_offset >= new_height:
-            break  # **滾動到底部時停止**
-
-        scroll_attempts += 1  # **增加滾動次數計數器**
-
-    # **拼接圖片**
-    stitched_img_path = os.path.join(task_dir, f'screenshot_full_{it}.png')
-    stitch_images(full_screenshots, stitched_img_path)
-
-    return stitched_img_path, full_rects, full_elements, full_elements_text  # **返回完整截圖和標記資訊**
-"""
-
-
-
-
-def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
-#def format_msg(it, init_msg, pdf_obs, warn_obs, screenshots, web_text):
+def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text, prev_step_action=""):
     if it == 1:
-        init_msg += f"I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
+        init_msg += f"{prev_step_action}\nI've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
         init_msg_format = {
             'role': 'user',
             'content': [
                 {'type': 'text', 'text': init_msg},
             ]
         }
-        '''
-        # 加入所有的截圖
-        for img_path in screenshots:
-            with open(img_path, "rb") as img_file:
-                print(f"DEBUG: img_path = {img_path}")
-                b64_img = base64.b64encode(img_file.read()).decode('utf-8')
-                init_msg_format.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}})
-        '''
-        init_msg_format['content'].append({"type": "image_url",
-                                           "image_url": {"url": f"data:image/png;base64,{web_img_b64}"}})
+        init_msg_format['content'].append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{web_img_b64}"}
+        })
         return init_msg_format
     else:
         if not pdf_obs:
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text', 'text': f"{prev_step_action}\nObservation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -431,7 +87,7 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text', 'text': f"{prev_step_action}\nObservation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -441,7 +97,7 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
         return curr_msg
 
 
-def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree):
+def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree, prev_step_action=""):
     if it == 1:
         init_msg_format = {
             'role': 'user',
@@ -452,12 +108,12 @@ def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree):
         if not pdf_obs:
             curr_msg = {
                 'role': 'user',
-                'content': f"Observation:{warn_obs} please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
+                'content': f"{prev_step_action}\nObservation:{warn_obs} please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
             }
         else:
             curr_msg = {
                 'role': 'user',
-                'content': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
+                'content': f"{prev_step_action}\nObservation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
             }
         return curr_msg
 
@@ -468,7 +124,6 @@ def call_gpt4v_api(args, openai_client, messages):
         try:
             if not args.text_only:
                 logging.info('Calling gpt4v API...')
-                #logging.info(f'API key:{args.api_key}')
                 openai_response = openai_client.chat.completions.create(
                     model=args.api_model, messages=messages, max_tokens=1000, seed=args.seed
                 )
@@ -507,6 +162,41 @@ def call_gpt4v_api(args, openai_client, messages):
         if retry_times == 10:
             logging.info('Retrying too many times')
             return None, None, True, None
+
+
+# Agent for comebine lyrics
+def encode_image(image_path):
+    """Encodes image to base64 for OpenAI vision API"""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+def agent_combine_screenshots_llm(args, client, screenshot_paths):
+    """Agent 2: LLM-based agent combines screenshots into complete lyrics."""
+
+    messages = [{"role": "system", "content": COMBINE_LYRICS_AGENT_PROMPT}]
+    
+    content = [{"type": "text", "text": "Here are screenshots containing parts of song lyrics. Please extract and combine all lyrics clearly."}]
+
+    # Add all screenshots into the content for the LLM
+    for path in screenshot_paths:
+        image_base64 = encode_image(path)
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{image_base64}"}
+        })
+
+    messages.append({"role": "user", "content": content})
+
+    response = client.chat.completions.create(
+        #model="gpt-4o",  # or your chosen vision-enabled model
+        model= args.api_model,
+        messages=messages,
+        max_tokens=2000,
+        seed=args.seed
+    )
+    combined_lyrics = response.choices[0].message.content.strip()
+
+    return combined_lyrics
 
 
 def exec_action_click(info, web_ele, driver_task):
@@ -584,7 +274,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--test_file', type=str, default='data/test.json')
     parser.add_argument('--max_iter', type=int, default=5)
+    parser.add_argument('--trajectory', action='store_true')
+    parser.add_argument('--error_max_reflection_iter', type=int, default=1, help='Number of reflection restarts allowed when exceeding max_iter')
+    
     parser.add_argument("--api_key", default="key", type=str, help="YOUR_OPENAI_API_KEY")
+    #parser.add_argument("--api_model", default="gpt-4-vision-preview", type=str, help="api model name")
     parser.add_argument("--api_model", default="gpt-4o-mini", type=str, help="api model name")
     parser.add_argument("--output_dir", type=str, default='results')
     parser.add_argument("--seed", type=int, default=None)
@@ -599,15 +293,18 @@ def main():
     parser.add_argument("--window_width", type=int, default=1024)
     parser.add_argument("--window_height", type=int, default=768)  # for headless mode, there is no address bar
     parser.add_argument("--fix_box_color", action='store_true')
+    parser.add_argument("--start_maximized", action='store_true')
 
     args = parser.parse_args()
 
+    # 判斷是否有看到過 partial answer
+    has_seen_partial_answer = False
     # OpenAI client
-    logging.info(f'API key:{args.api_key}')
     client = OpenAI(api_key=args.api_key)
-
+    #import undetected_chromedriver as uc
     options = driver_config(args)
-
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+    options.add_argument("disable-blink-features=AutomationControlled")
     # Save Result file
     current_time = time.strftime("%Y%m%d_%H_%M_%S", time.localtime())
     result_dir = os.path.join(args.output_dir, current_time)
@@ -627,11 +324,14 @@ def main():
         setup_logger(task_dir)
         logging.info(f'########## TASK{task["id"]} ##########')
 
+        # Initialize the window (The window was too small, and I couldn't see some parts of the screen, so I added the --start_maximized parameter).
         driver_task = webdriver.Chrome(options=options)
+        if args.start_maximized: driver_task.maximize_window()
+        else: driver_task.set_window_size(args.window_width, args.window_height)  # larger height may contain more web information
+        
 
         # About window size, 765 tokens
         # You can resize to height = 512 by yourself (255 tokens, Maybe bad performance)
-        driver_task.set_window_size(args.window_width, args.window_height)  # larger height may contain more web information
         driver_task.get(task['web'])
         try:
             driver_task.find_element(By.TAG_NAME, 'body').click()
@@ -652,10 +352,10 @@ def main():
         fail_obs = ""  # When error execute the action
         pdf_obs = ""  # When download PDF file
         warn_obs = ""  # Type warning
-        pattern = r'Thought:|Action:|Observation:'
+        pattern = r'Thought:|Action:|Observation:|Errors:|Explanation:'
 
-        
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        #messages = [{'role': 'system', 'content':  SYSTEM_PROMPT + EXTRACT_LYRICS_PROMPT}]
         obs_prompt = "Observation: please analyze the attached screenshot and give the Thought and Action. "
         if args.text_only:
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT_TEXT_ONLY}]
@@ -663,34 +363,57 @@ def main():
 
         init_msg = f"""Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
         init_msg = init_msg.replace('https://www.example.com', task['web'])
+        
+        '''
+        # 請求時添加獲取完整歌詞
+        extract_lyrics_prompt=f"""You are an intelligent assistant designed to extract the full lyrics of a song from the web.
+
+    1. **Page Analysis**: First, review the current page and identify the section that contains the lyrics. If the lyrics are only partially visible, scroll down to check if there are more lyrics further down the page. 
+    
+    2. **Scroll and Extract**: After scrolling, extract any newly visible lyrics that were previously hidden. If you encounter additional sections with lyrics, extract them and append them to the existing lyrics.
+    
+    3. **Stop When Complete**: Once you have collected all the lyrics (i.e., no more lyrics appear when you scroll), finalize the extracted lyrics and present them in the format:
+    - ["Song Title", "Complete lyrics"]
+    
+    4. **Handle Multiple Results**: If there are multiple sections with lyrics, ensure they are concatenated properly, and make sure you are pulling lyrics from the correct section, not from non-relevant parts like video descriptions or advertisements.
+
+    
+    """
+    '''
+   
+        
+        #init_msg = init_msg + extract_lyrics_prompt 
+        init_msg = init_msg + EXTRACT_LYRICS_PROMPT
         init_msg = init_msg + obs_prompt
+
+    
+        
+        # Store the screenshots which has lyrics
+        lyrics_screenshot_paths = []  # store screenshot paths
 
         it = 0
         accumulate_prompt_token = 0
         accumulate_completion_token = 0
 
+        # Error Grounding Agent
+        activate_EGA=True
+        error_exist=False
+        EGA_explanation=""
+        bot_thought=""
+        
+        # Reflection: Trajectory
+        current_history = ""     # Record the steps of the current iteration.
+        
+        print(f"Trajectory: {args.trajectory}")
+        print(f"EGA: {activate_EGA}")
+        
         while it < args.max_iter:
             logging.info(f'Iter: {it}')
             it += 1
-
             if not fail_obs:
                 try:
                     if not args.text_only:
-                        #rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=args.fix_box_color)
-                        # 先滾動並擷取完整頁面，並標記可交互的元素
-                        #screenshot_path, rects, web_eles, web_eles_text = capture_full_page(driver_task, task_dir, it)
-                        # 先滾動並擷取完整頁面
-                        #screenshot_path = capture_full_page(driver_task, task_dir, it)
-
-
-                        # 確保 AI 獲取完整頁面後再標記可交互元素
-                        #print("滾動完畢，開始標記完整頁面上的可交互元素...")
-                        #rects, web_eles, web_eles_text = get_full_page_elements(driver_task)
-
-                        # 先滾動、標記並擷取完整頁面
-                        screenshot_path, rects, web_eles, web_eles_text = capture_and_mark_full_page(driver_task, task_dir, it)
-
-     
+                        rects, web_eles, web_eles_text = get_web_element_rect(driver_task, fix_color=args.fix_box_color)
                     else:
                         accessibility_tree_path = os.path.join(task_dir, 'accessibility_tree{}'.format(it))
                         ac_tree, obs_info = get_webarena_accessibility_tree(driver_task, accessibility_tree_path)
@@ -702,31 +425,93 @@ def main():
                         logging.error('Driver error when obtaining accessibility tree.')
                     logging.error(e)
                     break
+            
+                img_path = os.path.join(task_dir, 'screenshot{}.png'.format(it))
+                driver_task.save_screenshot(img_path)
                 
+                # encode image
+                b64_img = encode_image(img_path)
 
+                # Error Grounding Agent
+                if it>1 and activate_EGA:
+                    # 丟 ground agent prompt 和 screenshot
+                    #EGA_messages = [{'role': 'system', 'content': ERROR_GROUNDING_AGENT_PROMPT + EXTRACT_LYRICS_PROMPT}]
+                    EGA_messages = [{'role': 'system', 'content': ERROR_GROUNDING_AGENT_PROMPT }]
+                    EGA_img = encode_image(img_path)
+                    EGA_user_messages={
+                        'role': 'user', 
+                        'content':[
+                            {'type':'text', 'text':'Thought:'+bot_thought+'\nScreenshot:'},
+                            {
+                                'type': 'image_url',
+                                'image_url': {"url": f"data:image/png;base64,{EGA_img}"}
+                            }
+                        ]}
+                    EGA_messages.append(EGA_user_messages)
+                    prompt_tokens, completion_tokens, gpt_call_error, openai_response = call_gpt4v_api(args, client, EGA_messages)
+                    if gpt_call_error:
+                        break
+                    else:
+                        accumulate_prompt_token += prompt_tokens
+                        accumulate_completion_token += completion_tokens
+                        logging.info(f'Accumulate Prompt Tokens: {accumulate_prompt_token}; Accumulate Completion Tokens: {accumulate_completion_token}')
+                        logging.info('API call complete...')
+                    '''
+                    EGA_res = openai_response.choices[0].message.content
+                    if re.split(pattern, EGA_res)[1].strip() == 'Yes':
+                        error_exist = True
+                    elif re.split(pattern, EGA_res)[1].strip() == 'No':
+                        error_exist = False
+                    else:
+                        error_exist = False
+                        print("error_exist got unexpected result:",EGA_res)
+                    if error_exist==True:
+                        EGA_explanation = re.split(pattern, EGA_res)[2].strip()
+                    '''
+                    EGA_res = openai_response.choices[0].message.content
 
+                    # 使用正規表達式來穩定擷取結果
+                    error_match = re.search(r"Errors:\s*(Yes|No)", EGA_res)
+                    explanation_match = re.search(r"Explanation:\s*(.*)", EGA_res, re.DOTALL)
 
-                ## 先滾動並擷取完整網頁內容
-                #screenshot_path = capture_full_page(driver_task, task_dir, it)
-                #已有執行多張滾動截圖 所以註解掉
-                #img_path = os.path.join(task_dir, 'screenshot{}.png'.format(it))
-                #driver_task.save_screenshot(img_path)
+                    # 判斷是否有錯
+                    if error_match:
+                        error_exist = error_match.group(1).strip() == "Yes"
+                        logging.info(f"[EGA] Error detected: {error_exist}")
+                    else:
+                        error_exist = False
+                        logging.warning("[EGA] Failed to parse 'Errors:' from EGA response.")
+                        logging.warning(f"[EGA Raw]: {EGA_res}")
 
+                    
+                    # ✅ 加這段邏輯容忍 scroll-error 過多的情境
+                    if error_exist and "lyrics" in bot_thought.lower() and "scroll" in chosen_action.lower():
+                        scroll_count += 1
+                        if scroll_count >= 3:
+                            logging.warning("⚠️ Too many scrolls + EGA errors. Forcing error_exist=False.")
+                            error_exist = False
+                    else:
+                        scroll_count = 0  # reset if not in scroll loop
+
+                    # 擷取解釋文字（只有在有錯時才擷取）
+                    EGA_explanation = ""
+                    if error_exist and explanation_match:
+                        EGA_explanation = explanation_match.group(1).strip()
+                                            
                 # accessibility tree
                 if (not args.text_only) and args.save_accessibility_tree:
                     accessibility_tree_path = os.path.join(task_dir, 'accessibility_tree{}'.format(it))
                     get_webarena_accessibility_tree(driver_task, accessibility_tree_path)
 
-                # encode image
-                #b64_img = encode_image(img_path)
-                b64_img = encode_image(screenshot_path)  # `screenshots` 是拼接後的完整圖片
-
                 # format msg
                 if not args.text_only:
-                    curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text)
-                    #curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, screenshots, web_eles_text)
+                    curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text, SYSTEM_PREVIOUS_STEP + current_history)
+                    if error_exist == True:
+                        curr_msg['content'][0]['text']+=("\nAdditional Information: Looks like your previous thought has some problem in operation. Here is the message from Error Grounding Agent\n"+EGA_explanation)
                 else:
-                    curr_msg = format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree)
+                    curr_msg = format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree, SYSTEM_PREVIOUS_STEP + current_history)
+                    if error_exist == True:
+                        curr_msg['content']+=("\nAdditional Information: Looks like your previous thought has some problem in operation. Here is the message from Error Grounding Agent\n"+EGA_explanation)
                 messages.append(curr_msg)
             else:
                 curr_msg = {
@@ -743,7 +528,7 @@ def main():
 
             # Call GPT-4v API
             prompt_tokens, completion_tokens, gpt_call_error, openai_response = call_gpt4v_api(args, client, messages)
-
+        
             if gpt_call_error:
                 break
             else:
@@ -753,7 +538,7 @@ def main():
                 logging.info('API call complete...')
             gpt_4v_res = openai_response.choices[0].message.content
             messages.append({'role': 'assistant', 'content': gpt_4v_res})
-
+            # print(gpt_4v_res)
 
             # remove the rects on the website
             if (not args.text_only) and rects:
@@ -771,12 +556,42 @@ def main():
                 logging.error(e)
                 fail_obs = "Format ERROR: Both 'Thought' and 'Action' should be included in your reply."
                 continue
+            
+            # print(f"GPT-4v Response: {gpt_4v_res}\n--------")
 
-            # bot_thought = re.split(pattern, gpt_4v_res)[1].strip()
+            bot_thought = re.split(pattern, gpt_4v_res)[1].strip()
             chosen_action = re.split(pattern, gpt_4v_res)[2].strip()
-            # print(chosen_action)
-            action_key, info = extract_information(chosen_action)
+            
+            trajectory_info = f"Thought {bot_thought}\nAction {chosen_action}"
+            error_info = f"Error: {error_exist}\nExplanation: {EGA_explanation}"
+                
+            if args.trajectory:
+                current_history += trajectory_info
+                if activate_EGA:
+                    current_history += error_info
+                
+            print(f"Step {it}:\n{error_info}\n{trajectory_info}\n----")
+            # 設定存儲步驟訊息的檔案路徑
+            log_step_file_path = os.path.join(task_dir, 'step_output.txt')  # 指定檔案路徑，將訊息存儲到 'step_output.txt'
 
+            # 打開檔案並將訊息附加
+            with open(log_step_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"Step {it}:\n{error_info}\n{trajectory_info}\n----\n")
+
+
+            # logging.info(gpt_4v_res)
+            action_key, info = extract_information(chosen_action)
+            logging.info(f"Parsed action_key: {action_key}, info: {info}")
+            
+            # 🔒 若已出現過 PARTIAL_LYRICS，只允許 answer 類型
+            if has_seen_partial_answer and action_key != "answer":
+                logging.warning("❌ Invalid action after PARTIAL_LYRICS: only ANSWER allowed.")
+                fail_obs = (
+                    "You have already started extracting the lyrics using PARTIAL_LYRICS. "
+                    "From this point on, you are only allowed to output further PARTIAL_LYRICS or FINAL FULL_LYRICS. "
+                    "Do not scroll, click, or search again. Focus on completing the lyrics."
+                )
+                continue
             fail_obs = ""
             pdf_obs = ""
             warn_obs = ""
@@ -785,14 +600,7 @@ def main():
                 window_handle_task = driver_task.current_window_handle
                 driver_task.switch_to.window(window_handle_task)
 
-                # AI 回傳指令，處理滾動
-                if "ScrollTo" in action_key:
-                    target_label = int(info[1])  # 獲取 AI 想要滾動的位置
-                    target_element = full_rects[target_label]
-                    driver_task.execute_script("arguments[0].scrollIntoView();", target_element)
-                    time.sleep(2)  # 確保頁面完成滾動
-                    
-                elif action_key == 'click':
+                if action_key == 'click':
                     if not args.text_only:
                         click_ele_number = int(info[0])
                         web_ele = web_eles[click_ele_number]
@@ -800,7 +608,7 @@ def main():
                         click_ele_number = info[0]
                         element_box = obs_info[click_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
-                                              element_box[1] + element_box[3] // 2)
+                                            element_box[1] + element_box[3] // 2)
                         web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
 
                     ele_tag_name = web_ele.tag_name.lower()
@@ -837,7 +645,7 @@ def main():
                         type_ele_number = info['number']
                         element_box = obs_info[type_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
-                                              element_box[1] + element_box[3] // 2)
+                                            element_box[1] + element_box[3] // 2)
                         web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
 
                     warn_obs = exec_action_type(info, web_ele, driver_task)
@@ -849,7 +657,7 @@ def main():
                         exec_action_scroll(info, web_eles, driver_task, args, None)
                     else:
                         exec_action_scroll(info, None, driver_task, args, obs_info)
-                
+
                 elif action_key == 'goback':
                     driver_task.back()
                     time.sleep(2)
@@ -857,12 +665,53 @@ def main():
                 elif action_key == 'google':
                     driver_task.get('https://www.google.com/')
                     time.sleep(2)
-
+                
+                
+                # 這個代表結束
+                #elif action_key == 'answer':
+                #    logging.info(info['content'])
+                #    logging.info('finish!!')
+                #    break
+                
+                
                 elif action_key == 'answer':
-                    logging.info(info['content'])
-                    logging.info('finish!!')
-                    break
+                    answer_type = info['type']
+                    content = info['content']
 
+                    if answer_type == "partial":
+                        # 表明已經看到歌詞了
+                        has_seen_partial_answer = True
+                        # store current screenshot path
+                        lyrics_screenshot_paths.append(img_path)
+                        logging.info(f'All collected screenshots so far: {lyrics_screenshot_paths}')
+                        # scroll down to continue collection
+                        exec_action_scroll({"number": "WINDOW", "content": "down"}, web_eles, driver_task, args, None)
+                        
+                        logging.info("Partial lyrics detected. Scrolling for more and continuing to next iteration.")
+                        continue  
+
+                    elif answer_type == "full":
+                        lyrics_screenshot_paths.append(img_path)
+                        logging.info(f'All collected screenshots so far: {lyrics_screenshot_paths}')
+                        # Trigger Agent 2 explicitly here!
+                        logging.info(f'Trigger Agent 2 explicitly here!START!')
+                        complete_lyrics = agent_combine_screenshots_llm(args, client, lyrics_screenshot_paths)
+
+                        # Save combined lyrics
+                        lyrics_path = os.path.join(task_dir, 'complete_lyrics.txt')
+                        with open(lyrics_path, 'w', encoding='utf-8') as f:
+                            f.write(complete_lyrics)
+
+                        logging.info('Lyrics combined successfully by Agent 2!')
+                        print ('Lyrics combined successfully by Agent 2!')
+                        print(" Final FULL_LYRICS submitted. Task finished.")
+                        break
+
+                    else:
+                        logging.info(content)
+                        logging.info(answer_type)
+                        logging.info('Task finished with generic answer.')
+                        break
                 else:
                     raise NotImplementedError
                 fail_obs = ""
@@ -874,6 +723,7 @@ def main():
                 else:
                     fail_obs = ""
                 time.sleep(2)
+
 
         print_message(messages, task_dir)
         driver_task.quit()
